@@ -5,6 +5,7 @@ const { Server } = require('socket.io');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cors = require('cors');
+const admin = require('firebase-admin');
 const { initializeApp, cert } = require('firebase-admin/app');
 const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 
@@ -119,6 +120,15 @@ app.get('/api/messages/:peer', async (req, res) => {
   res.json(messages);
 });
 
+app.post('/api/save-token', async (req, res) => {
+  const auth = verifyToken((req.headers.authorization || '').replace('Bearer ', ''));
+  if (!auth) return res.status(401).json({ error: 'Unauthorized' });
+  const { token } = req.body;
+  if (!token) return res.status(400).json({ error: 'No token' });
+  await db.collection('users').doc(auth.username).update({ fcmToken: token });
+  res.json({ success: true });
+});
+
 // ── SOCKET.IO ─────────────────────────────────────────────────────────────────
 io.on('connection', (socket) => {
   let currentUser = null;
@@ -156,6 +166,26 @@ io.on('connection', (socket) => {
     if (recipientSocketId) io.to(recipientSocketId).emit('message', fullMsg);
 
     console.log(`💬 [${currentUser} → ${to}]: ${text.substring(0, 50)}`);
+
+    try {
+      const recipientDoc = await db.collection('users').doc(to).get();
+      const fcmToken = recipientDoc.data()?.fcmToken;
+      const senderDoc = await db.collection('users').doc(currentUser).get();
+      const senderName = senderDoc.data()?.displayName || currentUser;
+      if (fcmToken && !onlineUsers.has(to)) {
+        await admin.messaging().send({
+          token: fcmToken,
+          notification: {
+            title: senderName,
+            body: text.length > 60 ? text.substring(0, 60) + '...' : text,
+          },
+          data: { from: currentUser }
+        });
+        console.log(`🔔 Notification sent to ${to}`);
+      }
+    } catch (notifErr) {
+      console.log('Notification skipped:', notifErr.message);
+    }
   });
 
   // Delete message
