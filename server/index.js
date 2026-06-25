@@ -174,4 +174,12 @@ io.on('connection', (socket) => {
 server.listen(PORT, () => {
   console.log(`\n🚀 NexChat server running on port ${PORT}`);
   console.log(`   Environment: ${process.env.NODE_ENV || 'development'}\n`);
+
+  // Prevent Render free tier from sleeping
+const https = require('https');
+setInterval(() => {
+  https.get('https://nexchat-server-w0rj.onrender.com', () => {
+    console.log('Keepalive ping sent');
+  }).on('error', () => {});
+}, 840000);
 });

@@ -1,9 +1,9 @@
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 // Change this to your deployed server URL when hosting
 // e.g. 'https://nexchat-server.onrender.com'
-const SERVER_URL = window.location.origin;
+const SERVER_URL = 'https://nexchat-server-w0rj.onrender.com';
 
-// ── STATE ─────────────────────────────────────────────────────────────────────
+// ── STATE ──────────────────────────────────────────────────────────────── ─────
 let socket = null;
 let token = localStorage.getItem('nc_token') || null;
 let currentUser = JSON.parse(localStorage.getItem('nc_user') || 'null');
