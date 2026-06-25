@@ -5,7 +5,6 @@ const { Server } = require('socket.io');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cors = require('cors');
-const admin = require('firebase-admin');
 const { initializeApp, cert } = require('firebase-admin/app');
 const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 
@@ -150,13 +149,33 @@ io.on('connection', (socket) => {
     console.log(`${currentUser} joined room ${room}`);
   });
 
+  socket.on('mark_read', async (data) => {
+    if (!currentUser) return;
+    const { from } = data;
+    if (!from) return;
+    const room = roomId(currentUser, from);
+    const batch = db.batch();
+    const snap = await db.collection('messages')
+      .where('room', '==', room)
+      .where('to', '==', currentUser)
+      .where('read', '==', false)
+      .get();
+    snap.forEach(doc => batch.update(doc.ref, { read: true }));
+    await batch.commit();
+    const senderSocketId = onlineUsers.get(from);
+    if (senderSocketId) {
+      io.to(senderSocketId).emit('messages_read', { by: currentUser, from });
+    }
+    console.log(`✅ ${currentUser} read messages from ${from}`);
+  });
+
   socket.on('message', async (data) => {
     if (!currentUser) return;
     const { to, text } = data;
     if (!text || !to || text.length > 2000) return;
 
     const room = roomId(currentUser, to);
-    const msg = { from: currentUser, to, room, text: text.trim(), time: Date.now() };
+    const msg = { from: currentUser, to, room, text: text.trim(), time: Date.now(), read: false, delivered: true };
 
     const ref = await db.collection('messages').add(msg);
     const fullMsg = { id: ref.id, ...msg };
@@ -167,25 +186,6 @@ io.on('connection', (socket) => {
 
     console.log(`💬 [${currentUser} → ${to}]: ${text.substring(0, 50)}`);
 
-    try {
-      const recipientDoc = await db.collection('users').doc(to).get();
-      const fcmToken = recipientDoc.data()?.fcmToken;
-      const senderDoc = await db.collection('users').doc(currentUser).get();
-      const senderName = senderDoc.data()?.displayName || currentUser;
-      if (fcmToken && !onlineUsers.has(to)) {
-        await admin.messaging().send({
-          token: fcmToken,
-          notification: {
-            title: senderName,
-            body: text.length > 60 ? text.substring(0, 60) + '...' : text,
-          },
-          data: { from: currentUser }
-        });
-        console.log(`🔔 Notification sent to ${to}`);
-      }
-    } catch (notifErr) {
-      console.log('Notification skipped:', notifErr.message);
-    }
   });
 
   // Delete message

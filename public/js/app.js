@@ -2,17 +2,6 @@
 // Change this to your deployed server URL when hosting
 // e.g. 'https://nexchat-server.onrender.com'
 const SERVER_URL = 'https://nexchat-server-w0rj.onrender.com';
-const VAPID_KEY = 'BE5a_VPonRsLtyZx0kaHLqB95rRjw9tveDVtmVgcDXZDHYZm-4H4v-H26WFmZxOe_4NC9Sq0UsGTO6Dfq3szwR4';
-firebase.initializeApp({
-  apiKey: "AIzaSyBPrMMQ8hJwmyNtA1JaDHvJGtPOHcE9SLs",
-  authDomain: "naxchat-abe49.firebaseapp.com",
-  projectId: "naxchat-abe49",
-  storageBucket: "naxchat-abe49.firebasestorage.app",
-  messagingSenderId: "411561104766",
-  appId: "1:411561104766:web:825099be07c1093b2ecf2f"
-});
-const messaging = firebase.messaging();
-
 // ── STATE ──────────────────────────────────────────────────────────────── ─────
 let socket = null;
 let token = localStorage.getItem('nc_token') || null;
@@ -92,6 +81,19 @@ function connectSocket() {
     Object.keys(messagesCache).forEach(peer => {
       messagesCache[peer] = messagesCache[peer].filter(m => m.id !== messageId);
     });
+
+    // Read receipts
+  socket.on('messages_read', ({ by, from }) => {
+    if (messagesCache[by]) {
+      messagesCache[by].forEach(m => {
+        if (m.from === currentUser.username && m.to === by) {
+          m.read = true;
+        }
+      });
+    }
+    if (activePeer === by) renderMessages(by);
+  });
+
     // Re-render if in active chat
     if (activePeer) renderMessages(activePeer);
     renderUserList();
@@ -182,33 +184,6 @@ function enterApp() {
   document.getElementById('my-name').textContent = currentUser.displayName;
   document.getElementById('my-avatar').textContent = currentUser.avatar;
   connectSocket();
-  setupNotifications();
-}
-
-async function setupNotifications() {
-  try {
-    if (!('Notification' in window)) return;
-    const permission = await Notification.requestPermission();
-    if (permission !== 'granted') return;
-
-    const registration = await navigator.serviceWorker.register('/firebase-messaging-sw.js');
-    const token = await messaging.getToken({
-      vapidKey: VAPID_KEY,
-      serviceWorkerRegistration: registration
-    });
-
-    if (token) {
-      await api('/api/save-token', 'POST', { token });
-      console.log('Notification token saved');
-    }
-
-    messaging.onMessage((payload) => {
-      const { title, body } = payload.notification;
-      toast(`${title}: ${body}`);
-    });
-  } catch (e) {
-    console.log('Notifications not available:', e.message);
-  }
 }
 
 function doLogout() {
@@ -352,6 +327,14 @@ function renderMessages(peer) {
       lastDate = dateStr;
     }
 
+    const ticks = isOwn
+      ? msg.read
+        ? '<span class="ticks read">✓✓</span>'
+        : msg.id.startsWith('local_')
+          ? '<span class="ticks">✓</span>'
+          : '<span class="ticks">✓✓</span>'
+      : '';
+
     html += `
       <div class="msg-group ${isOwn ? 'own' : ''}" id="msg-${msg.id}">
         <div class="msg-avatar">${senderInfo?.avatar || '👤'}</div>
@@ -360,7 +343,7 @@ function renderMessages(peer) {
           <div class="bubble" oncontextmenu="showDeleteMenu(event,'${msg.id}','${msg.from}')" ontouchstart="touchHold(event,'${msg.id}','${msg.from}')" ontouchend="cancelTouch()">
             ${esc(msg.text)}
           </div>
-          <div class="bubble-time">${timeStr}</div>
+          <div class="bubble-time">${timeStr} ${ticks}</div>
         </div>
       </div>`;
   });
