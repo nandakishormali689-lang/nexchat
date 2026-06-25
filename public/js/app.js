@@ -76,6 +76,17 @@ function connectSocket() {
     renderUserList();
   });
 
+    // Message deleted
+  socket.on('message_deleted', ({ messageId }) => {
+    // Remove from all caches
+    Object.keys(messagesCache).forEach(peer => {
+      messagesCache[peer] = messagesCache[peer].filter(m => m.id !== messageId);
+    });
+    // Re-render if in active chat
+    if (activePeer) renderMessages(activePeer);
+    renderUserList();
+  });
+
   // Presence updates (online/offline)
   socket.on('presence', ({ username, online }) => {
     if (usersCache[username]) {
@@ -305,11 +316,13 @@ function renderMessages(peer) {
     }
 
     html += `
-      <div class="msg-group ${isOwn ? 'own' : ''}">
+      <div class="msg-group ${isOwn ? 'own' : ''}" id="msg-${msg.id}">
         <div class="msg-avatar">${senderInfo?.avatar || '👤'}</div>
         <div class="bubbles">
           ${!isOwn ? `<div class="bubble-sender">${esc(senderInfo?.displayName || msg.from)}</div>` : ''}
-          <div class="bubble">${esc(msg.text)}</div>
+          <div class="bubble" oncontextmenu="showDeleteMenu(event,'${msg.id}','${msg.from}')" ontouchstart="touchHold(event,'${msg.id}','${msg.from}')" ontouchend="cancelTouch()">
+            ${esc(msg.text)}
+          </div>
           <div class="bubble-time">${timeStr}</div>
         </div>
       </div>`;
@@ -415,6 +428,64 @@ function goBackMobile() {
     activePeer = null;
   }
 }
+
+// ── DELETE MESSAGE ─────────────────────────────────────────────────────────
+let touchHoldTimer = null;
+
+function touchHold(e, msgId, msgFrom) {
+  touchHoldTimer = setTimeout(() => {
+    showDeleteMenu(e, msgId, msgFrom);
+  }, 600);
+}
+
+function cancelTouch() {
+  clearTimeout(touchHoldTimer);
+}
+
+function showDeleteMenu(e, msgId, msgFrom) {
+  e.preventDefault();
+  // Only allow deleting own messages
+  if (msgFrom !== currentUser.username) return;
+  // Remove any existing menu
+  removeDeleteMenu();
+
+  const menu = document.createElement('div');
+  menu.id = 'delete-menu';
+  menu.innerHTML = `
+    <button onclick="deleteMessage('${msgId}')">🗑️ Delete</button>
+    <button onclick="removeDeleteMenu()">✕ Cancel</button>
+  `;
+  document.body.appendChild(menu);
+
+  // Position near touch/click
+  const x = e.touches ? e.touches[0].clientX : e.clientX;
+  const y = e.touches ? e.touches[0].clientY : e.clientY;
+  menu.style.left = Math.min(x, window.innerWidth - 160) + 'px';
+  menu.style.top = Math.min(y, window.innerHeight - 100) + 'px';
+
+  // Close when clicking outside
+  setTimeout(() => {
+    document.addEventListener('click', removeDeleteMenu, { once: true });
+  }, 100);
+}
+
+function removeDeleteMenu() {
+  const menu = document.getElementById('delete-menu');
+  if (menu) menu.remove();
+}
+
+function deleteMessage(msgId) {
+  removeDeleteMenu();
+  if (!socket || !activePeer) return;
+  socket.emit('delete_message', { messageId: msgId, to: activePeer });
+  // Optimistic remove
+  if (messagesCache[activePeer]) {
+    messagesCache[activePeer] = messagesCache[activePeer].filter(m => m.id !== msgId);
+  }
+  renderMessages(activePeer);
+  renderUserList();
+}
+
 // Swipe left to go back on mobile
 (function() {
   let touchStartX = 0;

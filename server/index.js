@@ -158,6 +158,39 @@ io.on('connection', (socket) => {
     console.log(`💬 [${currentUser} → ${to}]: ${text.substring(0, 50)}`);
   });
 
+  // Delete message
+  socket.on('delete_message', async (data) => {
+    if (!currentUser) return;
+    const { messageId, to } = data;
+    if (!messageId || !to) return;
+
+    try {
+      const msgRef = db.collection('messages').doc(messageId);
+      const msgSnap = await msgRef.get();
+
+      // Only allow sender to delete
+      if (!msgSnap.exists || msgSnap.data().from !== currentUser) {
+        socket.emit('delete_error', 'Not allowed');
+        return;
+      }
+
+      await msgRef.delete();
+
+      // Notify both users
+      const room = roomId(currentUser, to);
+      io.to(room).emit('message_deleted', { messageId });
+
+      const recipientSocketId = onlineUsers.get(to);
+      if (recipientSocketId) {
+        io.to(recipientSocketId).emit('message_deleted', { messageId });
+      }
+
+      console.log(`🗑️ Message ${messageId} deleted by ${currentUser}`);
+    } catch (e) {
+      console.error('Delete error:', e);
+    }
+  });
+
   socket.on('typing', ({ to, typing }) => {
     if (!currentUser) return;
     socket.to(roomId(currentUser, to)).emit('typing', { from: currentUser, typing });
