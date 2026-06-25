@@ -93,7 +93,7 @@
     </div>
 
     <div class="chat-area">
-      <div id="no-chat">
+      <div id="no-chat" style="display:none">
         <div class="no-chat-icon">💬</div>
         <p>Pick a conversation</p>
         <small>Messages travel live across the internet via Socket.io + Firebase</small>
@@ -101,6 +101,7 @@
 
       <div id="active-chat" style="display:none; flex-direction:column; height:100%">
         <div class="chat-header">
+  <button class="btn-icon mobile-back" onclick="goBackMobile()">‹ Back</button>
           <div class="avatar-wrap">
             <div class="avatar-circle" id="chat-peer-avatar">👤</div>
             <div class="status-dot" id="chat-peer-dot"></div>
@@ -134,7 +135,7 @@
 </div>
 
 <div id="toast"></div>
-<script src="/socket.io/socket.io.js"></script>
-<script src="js/app.js"></script>
+<script src="https://nexchat-server-w0rj.onrender.com/socket.io/socket.io.js"></script>
+<script src="js/app.js?v=2"></script>
 </body>
 </html>

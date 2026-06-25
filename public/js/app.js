@@ -39,6 +39,7 @@ function connectSocket() {
 
   socket.on('auth_ok', () => {
     loadUsers();
+    console.log('Socket authenticated successfully');
   });
 
   socket.on('auth_error', (err) => {
@@ -50,6 +51,14 @@ function connectSocket() {
   socket.on('message', (msg) => {
     const peer = msg.from === currentUser.username ? msg.to : msg.from;
 
+    // Auto join room so future messages arrive
+    socket.emit('join_room', peer);
+
+    // Remove optimistic duplicate
+    if (messagesCache[peer]) {
+      messagesCache[peer] = messagesCache[peer].filter(m => !m.id.startsWith('local_'));
+    }
+
     // Add to cache
     if (!messagesCache[peer]) messagesCache[peer] = [];
     const exists = messagesCache[peer].find(m => m.id === msg.id);
@@ -59,13 +68,11 @@ function connectSocket() {
     if (activePeer === peer) {
       renderMessages(peer);
     } else if (msg.from !== currentUser.username) {
-      // Notification for a different chat
       unreadCounts[peer] = (unreadCounts[peer] || 0) + 1;
       renderUserList();
       toast(`New message from ${usersCache[peer]?.displayName || peer}`);
     }
 
-    // Update preview in sidebar
     renderUserList();
   });
 
@@ -225,14 +232,21 @@ async function openChat(peer) {
   unreadCounts[peer] = 0;
 
   const u = usersCache[peer];
-  document.getElementById('no-chat').style.display = 'none';
+  // Mobile: hide sidebar, show chat area
+  if (window.innerWidth <= 600) {
+    document.getElementById('sidebar').classList.add('mobile-hidden');
+    document.getElementById('active-chat').closest('.chat-area').classList.add('mobile-show');
+  }
   const ac = document.getElementById('active-chat');
   ac.style.display = 'flex';
 
   updatePeerHeader(peer);
 
   // Join the socket room
-  if (socket) socket.emit('join_room', peer);
+  if (socket) {
+  socket.emit('join_room', peer);
+  console.log('Joined room with', peer);
+}
 
   // Load history if not cached
   if (!messagesCache[peer]) {
@@ -394,3 +408,28 @@ function toast(msg, duration = 3000) {
   t.classList.add('show');
   setTimeout(() => t.classList.remove('show'), duration);
 }
+function goBackMobile() {
+  if (window.innerWidth <= 600) {
+    document.getElementById('sidebar').classList.remove('mobile-hidden');
+    document.getElementById('active-chat').closest('.chat-area').classList.remove('mobile-show');
+    activePeer = null;
+  }
+}
+// Swipe left to go back on mobile
+(function() {
+  let touchStartX = 0;
+  let touchEndX = 0;
+
+  document.addEventListener('touchstart', (e) => {
+    touchStartX = e.changedTouches[0].screenX;
+  }, { passive: true });
+
+  document.addEventListener('touchend', (e) => {
+    touchEndX = e.changedTouches[0].screenX;
+    const diff = touchEndX - touchStartX;
+    // Swipe right (diff > 80) = go back to contacts
+    if (diff > 80 && window.innerWidth <= 600 && activePeer) {
+      goBackMobile();
+    }
+  }, { passive: true });
+})();

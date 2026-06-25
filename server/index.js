@@ -135,7 +135,9 @@ io.on('connection', (socket) => {
 
   socket.on('join_room', (peerUsername) => {
     if (!currentUser) return;
-    socket.join(roomId(currentUser, peerUsername));
+    const room = roomId(currentUser, peerUsername);
+    socket.join(room);
+    console.log(`${currentUser} joined room ${room}`);
   });
 
   socket.on('message', async (data) => {
