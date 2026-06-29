@@ -38,6 +38,7 @@ function connectSocket() {
 
   socket.on('auth_ok', () => {
     loadUsers();
+    loadGroups();
     console.log('Socket authenticated successfully');
   });
 
@@ -81,6 +82,26 @@ function connectSocket() {
     Object.keys(messagesCache).forEach(peer => {
       messagesCache[peer] = messagesCache[peer].filter(m => m.id !== messageId);
     });
+
+    // Incoming group message
+  socket.on('group_message', (msg) => {
+    const { groupId } = msg;
+    if (!groupMessagesCache[groupId]) groupMessagesCache[groupId] = [];
+    const exists = groupMessagesCache[groupId].find(m => m.id === msg.id);
+    if (!exists) {
+      if (groupMessagesCache[groupId]) {
+        groupMessagesCache[groupId] = groupMessagesCache[groupId].filter(m => !m.id.startsWith('local_'));
+      }
+      groupMessagesCache[groupId].push(msg);
+    }
+    if (activeGroup === groupId) {
+      renderGroupMessages(groupId);
+    } else if (msg.from !== currentUser.username) {
+      const g = groupsCache[groupId];
+      toast(`${g?.name || 'Group'}: ${msg.text.substring(0, 30)}`);
+    }
+    renderGroupList();
+  });
 
     // Read receipts
   socket.on('messages_read', ({ by, from }) => {
@@ -355,11 +376,28 @@ function renderMessages(peer) {
 function sendMessage() {
   const input = document.getElementById('msg-input');
   const text = input.value.trim();
-  if (!text || !activePeer || !socket) return;
+  if (!text || !socket) return;
 
+  if (activeGroup) {
+    socket.emit('group_message', { groupId: activeGroup, text });
+    const msg = {
+      id: 'local_' + Date.now(),
+      from: currentUser.username,
+      groupId: activeGroup,
+      text,
+      time: Date.now(),
+    };
+    if (!groupMessagesCache[activeGroup]) groupMessagesCache[activeGroup] = [];
+    groupMessagesCache[activeGroup].push(msg);
+    input.value = '';
+    input.style.height = '';
+    renderGroupMessages(activeGroup);
+    renderGroupList();
+    return;
+  }
+
+  if (!activePeer) return;
   socket.emit('message', { to: activePeer, text });
-
-  // Optimistic: add to local cache immediately
   const msg = {
     id: 'local_' + Date.now(),
     from: currentUser.username,
@@ -369,13 +407,10 @@ function sendMessage() {
   };
   if (!messagesCache[activePeer]) messagesCache[activePeer] = [];
   messagesCache[activePeer].push(msg);
-
   input.value = '';
   input.style.height = '';
   renderMessages(activePeer);
   renderUserList();
-
-  // Stop typing indicator
   socket.emit('typing', { to: activePeer, typing: false });
 }
 
@@ -524,3 +559,166 @@ function deleteMessage(msgId) {
     }
   }, { passive: true });
 })();
+
+// ── GROUP CHAT ─────────────────────────────────────────────────────────────
+let groupsCache = {};
+let activeGroup = null;
+let groupMessagesCache = {};
+
+async function loadGroups() {
+  try {
+    const groups = await api('/api/groups', 'GET');
+    groupsCache = {};
+    groups.forEach(g => { groupsCache[g.id] = g; });
+    renderGroupList();
+    groups.forEach(g => {
+      if (socket) socket.emit('join_group', g.id);
+    });
+  } catch (e) {
+    console.log('Could not load groups:', e.message);
+  }
+}
+
+function renderGroupList() {
+  const list = document.getElementById('groups-list');
+  const label = document.getElementById('groups-label');
+  const ids = Object.keys(groupsCache);
+  if (ids.length === 0) {
+    list.style.display = 'none';
+    label.style.display = 'none';
+    return;
+  }
+  list.style.display = 'block';
+  label.style.display = 'flex';
+  list.innerHTML = '';
+  ids.forEach(id => {
+    const g = groupsCache[id];
+    const msgs = groupMessagesCache[id] || [];
+    const last = msgs[msgs.length - 1];
+    const item = document.createElement('div');
+    item.className = 'user-item' + (activeGroup === id ? ' active' : '');
+    item.innerHTML = `
+      <div class="avatar-wrap">
+        <div class="avatar-circle">${g.avatar || '👥'}</div>
+      </div>
+      <div class="user-meta">
+        <div class="user-name">${esc(g.name)}</div>
+        <div class="user-preview">${last ? esc(last.text) : g.members.length + ' members'}</div>
+      </div>
+    `;
+    item.onclick = () => openGroupChat(id);
+    list.appendChild(item);
+  });
+}
+
+async function openGroupChat(groupId) {
+  activeGroup = groupId;
+  activePeer = null;
+  const g = groupsCache[groupId];
+
+  document.getElementById('no-chat').style.display = 'none';
+  const ac = document.getElementById('active-chat');
+  ac.style.display = 'flex';
+
+  document.getElementById('chat-peer-name').textContent = g.name;
+  document.getElementById('chat-peer-avatar').textContent = g.avatar || '👥';
+  document.getElementById('chat-peer-dot').className = 'status-dot online';
+  document.getElementById('chat-peer-sub').textContent = g.members.length + ' members';
+  document.getElementById('chat-peer-sub').style.color = 'var(--text2)';
+
+  if (socket) socket.emit('join_group', groupId);
+
+  if (!groupMessagesCache[groupId]) {
+    document.getElementById('messages-area').innerHTML = '<div class="list-hint">Loading…</div>';
+    try {
+      const history = await api(`/api/groups/${groupId}/messages`, 'GET');
+      groupMessagesCache[groupId] = history;
+    } catch (e) {
+      groupMessagesCache[groupId] = [];
+    }
+  }
+
+  renderGroupMessages(groupId);
+  renderGroupList();
+
+  if (window.innerWidth <= 600) {
+    document.getElementById('sidebar').classList.add('mobile-hidden');
+    document.getElementById('active-chat').closest('.chat-area').classList.add('mobile-show');
+  }
+  document.getElementById('msg-input').focus();
+}
+
+function renderGroupMessages(groupId) {
+  const area = document.getElementById('messages-area');
+  const msgs = groupMessagesCache[groupId] || [];
+  if (msgs.length === 0) {
+    area.innerHTML = `<div class="empty-conv"><span>👥</span><p>Start the group conversation</p></div>`;
+    return;
+  }
+  let html = '';
+  let lastDate = '';
+  msgs.forEach(msg => {
+    const d = new Date(msg.time);
+    const dateStr = d.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
+    const timeStr = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+    const isOwn = msg.from === currentUser.username;
+    const senderInfo = isOwn ? currentUser : usersCache[msg.from];
+    if (dateStr !== lastDate) {
+      html += `<div class="day-divider">${dateStr}</div>`;
+      lastDate = dateStr;
+    }
+    html += `
+      <div class="msg-group ${isOwn ? 'own' : ''}" id="msg-${msg.id}">
+        <div class="msg-avatar">${senderInfo?.avatar || '👤'}</div>
+        <div class="bubbles">
+          ${!isOwn ? `<div class="bubble-sender">${esc(senderInfo?.displayName || msg.from)}</div>` : ''}
+          <div class="bubble">${esc(msg.text)}</div>
+          <div class="bubble-time">${timeStr}</div>
+        </div>
+      </div>`;
+  });
+  area.innerHTML = html;
+  area.scrollTop = area.scrollHeight;
+}
+
+function showNewGroup() {
+  const modal = document.getElementById('group-modal');
+  modal.style.display = 'flex';
+  const checkboxes = document.getElementById('member-checkboxes');
+  checkboxes.innerHTML = '';
+  Object.entries(usersCache).forEach(([username, info]) => {
+    const div = document.createElement('div');
+    div.style.cssText = 'display:flex;align-items:center;gap:10px;padding:6px 8px;border-radius:8px;cursor:pointer;';
+    div.innerHTML = `
+      <input type="checkbox" id="member-${username}" value="${username}" style="width:16px;height:16px;cursor:pointer">
+      <label for="member-${username}" style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:14px">
+        <span style="font-size:18px">${info.avatar}</span>
+        <span>${esc(info.displayName)}</span>
+      </label>`;
+    checkboxes.appendChild(div);
+  });
+}
+
+function closeNewGroup() {
+  document.getElementById('group-modal').style.display = 'none';
+  document.getElementById('group-name').value = '';
+}
+
+async function createGroup() {
+  const name = document.getElementById('group-name').value.trim();
+  if (!name) { toast('Please enter a group name'); return; }
+  const checked = [...document.querySelectorAll('#member-checkboxes input:checked')];
+  if (checked.length === 0) { toast('Please select at least 1 member'); return; }
+  const members = checked.map(c => c.value);
+  try {
+    const group = await api('/api/groups', 'POST', { name, members });
+    groupsCache[group.id] = group;
+    groupMessagesCache[group.id] = [];
+    closeNewGroup();
+    renderGroupList();
+    openGroupChat(group.id);
+    toast('Group created!');
+  } catch (e) {
+    toast('Error: ' + e.message);
+  }
+}

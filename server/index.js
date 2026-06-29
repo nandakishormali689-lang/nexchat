@@ -119,6 +119,31 @@ app.get('/api/messages/:peer', async (req, res) => {
   res.json(messages);
 });
 
+socket.on('join_group', (groupId) => {
+    if (!currentUser) return;
+    socket.join('group_' + groupId);
+    console.log(`${currentUser} joined group ${groupId}`);
+  });
+
+  socket.on('group_message', async (data) => {
+    if (!currentUser) return;
+    const { groupId, text } = data;
+    if (!text || !groupId || text.length > 2000) return;
+    const groupDoc = await db.collection('groups').doc(groupId).get();
+    if (!groupDoc.exists) return;
+    if (!groupDoc.data().members.includes(currentUser)) return;
+    const msg = {
+      groupId,
+      from: currentUser,
+      text: text.trim(),
+      time: Date.now(),
+    };
+    const ref = await db.collection('groupMessages').add(msg);
+    const fullMsg = { id: ref.id, ...msg };
+    io.to('group_' + groupId).emit('group_message', fullMsg);
+    console.log(`👥 [${currentUser} → group ${groupId}]: ${text.substring(0, 50)}`);
+  });
+
 app.post('/api/save-token', async (req, res) => {
   const auth = verifyToken((req.headers.authorization || '').replace('Bearer ', ''));
   if (!auth) return res.status(401).json({ error: 'Unauthorized' });
@@ -126,6 +151,55 @@ app.post('/api/save-token', async (req, res) => {
   if (!token) return res.status(400).json({ error: 'No token' });
   await db.collection('users').doc(auth.username).update({ fcmToken: token });
   res.json({ success: true });
+});
+
+// Create a group
+app.post('/api/groups', async (req, res) => {
+  const auth = verifyToken((req.headers.authorization || '').replace('Bearer ', ''));
+  if (!auth) return res.status(401).json({ error: 'Unauthorized' });
+  const { name, members } = req.body;
+  if (!name || !members || members.length < 1)
+    return res.status(400).json({ error: 'Need a name and at least 1 member' });
+  const allMembers = [...new Set([auth.username, ...members])];
+  const group = {
+    name,
+    members: allMembers,
+    createdBy: auth.username,
+    createdAt: FieldValue.serverTimestamp(),
+    avatar: '👥'
+  };
+  const ref = await db.collection('groups').add(group);
+  res.json({ id: ref.id, ...group });
+});
+
+// Get all groups for current user
+app.get('/api/groups', async (req, res) => {
+  const auth = verifyToken((req.headers.authorization || '').replace('Bearer ', ''));
+  if (!auth) return res.status(401).json({ error: 'Unauthorized' });
+  const snap = await db.collection('groups')
+    .where('members', 'array-contains', auth.username)
+    .get();
+  const groups = [];
+  snap.forEach(doc => groups.push({ id: doc.id, ...doc.data() }));
+  res.json(groups);
+});
+
+// Get group messages
+app.get('/api/groups/:groupId/messages', async (req, res) => {
+  const auth = verifyToken((req.headers.authorization || '').replace('Bearer ', ''));
+  if (!auth) return res.status(401).json({ error: 'Unauthorized' });
+  const groupDoc = await db.collection('groups').doc(req.params.groupId).get();
+  if (!groupDoc.exists) return res.status(404).json({ error: 'Group not found' });
+  if (!groupDoc.data().members.includes(auth.username))
+    return res.status(403).json({ error: 'Not a member' });
+  const snap = await db.collection('groupMessages')
+    .where('groupId', '==', req.params.groupId)
+    .orderBy('time', 'asc')
+    .limit(200)
+    .get();
+  const messages = [];
+  snap.forEach(doc => messages.push({ id: doc.id, ...doc.data() }));
+  res.json(messages);
 });
 
 // ── SOCKET.IO ─────────────────────────────────────────────────────────────────
